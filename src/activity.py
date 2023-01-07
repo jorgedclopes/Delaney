@@ -1,20 +1,20 @@
-from __future__ import print_function
-
+import json
+import logging
+import time
 import os.path
-from datetime import datetime
 from typing import List
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# If modifying these scopes, delete the file token.json.
-READONLY_SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly',
-                   'https://www.googleapis.com/auth/drive.activity',
-                   'https://www.googleapis.com/auth/contacts.readonly']
-SCOPES = ['https://www.googleapis.com/auth/drive.admin.labels']
+from format_data import get_person_id, display_name
+
+logger = logging.getLogger('activity')
+logger.setLevel(logging.INFO)
 
 
 def get_activity(creds, name):
@@ -26,63 +26,46 @@ def get_activity(creds, name):
     activity_service = build('driveactivity',
                              'v2',
                              credentials=creds)
-    datetime.utcnow()
     item = {'ancestorName': "items/{}".format(folder_id)}
     result = activity_service.activity().query(body=item).execute()
     return result['activities']
 
 
-def get_person_id(file):
-    return file.get('actors')[0].get('user').get('knownUser').get('personName')
-
-
-def display_name(person):
-    return person.get("names")[0].get("displayName")
-    # throws TypeError if it doesn't find the data
-
-
-def get_contacts(creds, name):
+def get_contacts(creds, name, retries=0):
+    # This function can be called quite frequently,
     people_service = build('people', 'v1', credentials=creds)
-    results = people_service.people().get(resourceName=name, personFields="names,emailAddresses,nicknames").execute()
+    try:
+        results = people_service.people()\
+            .get(resourceName=name, personFields="names,emailAddresses,nicknames")\
+            .execute()
+    except HttpError:
+        if retries >= 3:
+            raise RecursionError("Too many retries attempted")
+        logger.warning('Too many requests, waiting 1 minute.')
+        time.sleep(60)
+        return get_contacts(creds, name, retries+1)
     return results
 
 
 def get_action_info(creds, activity):
-    person_id = get_person_id(activity)
-    timestamp = activity.get('timestamp')
     try:
+        person_id = get_person_id(activity)
+        timestamp = activity.get('timestamp')
+        action = list(activity.get('primaryActionDetail').keys())[0]
         contact = get_contacts(creds, person_id)
         person_name = display_name(contact)
-        return [person_name,
-                list(activity.get('primaryActionDetail').keys())[0],
-                timestamp
-                ]
-    except (TypeError, AttributeError):
+        file_name = activity.get('targets')[0].get('driveItem').get('title') \
+            if action != "comment" \
+            else activity.get('targets')[0].get('fileComment').get('parent').get('title')
+        return {"name": person_name,
+                "action": action,
+                "time": timestamp,
+                "filename": file_name
+        }
+    except (TypeError, AttributeError) as error:
+        logger.error(error)
+        logger.error(json.dumps(activity, indent=2))
         return
-
-
-# Create label
-# Add label to file under directory recursively
-# Query files with label
-def main():
-    """Shows basic usage of the Drive v3 API.
-    Prints the names and ids of the first 10 files the user has access to.
-    """
-    creds = create_creds(READONLY_SCOPES)
-
-    try:
-        items = get_activity(creds, 'Pathfinder - Legacy of Fire')
-        if not items:
-            print('No files found.')
-            return
-
-        # print(json.dumps(items, indent=4))
-        info = [get_action_info(creds, item) for item in items]
-        for i in info:
-            print(i)
-    except HttpError as error:
-        # TODO(developer) - Handle errors from drive API.
-        print(f'An error occurred: {error}')
 
 
 def create_creds(scope: List[str]):
@@ -100,7 +83,3 @@ def create_creds(scope: List[str]):
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
     return creds
-
-
-if __name__ == '__main__':
-    main()
