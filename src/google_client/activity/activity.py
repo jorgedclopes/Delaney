@@ -5,13 +5,14 @@ import os.path
 from typing import List
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from format_data import get_person_id, display_name
+from src.google_client.format.format_data import get_person_id, display_name, get_time
 
 logger = logging.getLogger('activity')
 logger.setLevel(logging.INFO)
@@ -54,9 +55,12 @@ def get_action_info(creds, activity):
         action = list(activity.get('primaryActionDetail').keys())[0]
         contact = get_contacts(creds, person_id)
         person_name = display_name(contact)
-        file_name = activity.get('targets')[0].get('driveItem').get('title') \
+        first_target = activity.get('targets')[0]
+        # DriveItems and FileComments have a different structure
+        # The parent of a FileComment is a DriveItem
+        file_name = first_target.get('driveItem').get('title') \
             if action != "comment" \
-            else activity.get('targets')[0].get('fileComment').get('parent').get('title')
+            else first_target.get('fileComment').get('parent').get('title')
         return {"name": person_name,
                 "action": action,
                 "time": timestamp,
@@ -68,18 +72,36 @@ def get_action_info(creds, activity):
         return
 
 
+def format_info(individual_info):
+    entry_time = get_time(individual_info.get('time'))
+    action = individual_info.get('action')
+    file = individual_info.get('filename')
+    name = individual_info.get('name')
+    return "{}{}{}{}".format(entry_time, action, file, name)
+
+
 def create_creds(scope: List[str]):
     creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', scope)
+    token_file_name = '../token.json'
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    token_path = os.path.join(dir_path, token_file_name)
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, scope)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError as e:
+                logger.fatal('Could not refresh token.json')
+                logger.fatal(e)
+                exit(1)
         else:
+            cred_file_name = '../credentials.json'
+            cred_path = os.path.join(dir_path, cred_file_name)
             flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', scope)
+                cred_path, scope)
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-        with open('token.json', 'w') as token:
+        with open(token_path, 'w') as token:
             token.write(creds.to_json())
     return creds
