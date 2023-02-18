@@ -9,7 +9,8 @@ DEFAULT_TEXT_CHANNEL_NAME = 'bot-logs'
 
 def compute_times(repeat):
     base_time = datetime.now()
-    delta = timedelta(seconds=1)  # timedelta(days=1)
+    # delta = timedelta(seconds=1)
+    delta = timedelta(days=1)
     return [(base_time + i * delta).time() for i in range(1, repeat)]  # itertools.count(start=1)]
 
 
